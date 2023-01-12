@@ -70,6 +70,7 @@ func (k *K8sUninstaller) uninstallCerts(ctx context.Context) (err error) {
 	return err
 }
 
+// TODO convert to resourceSet?
 func (k *K8sInstaller) installCerts(ctx context.Context) error {
 	if k.params.InheritCA != "" {
 		caCluster, err := k8s.NewClient(k.params.InheritCA, "")

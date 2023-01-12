@@ -45,6 +45,8 @@ func (k *K8sUninstaller) Log(format string, a ...interface{}) {
 	fmt.Fprintf(k.params.Writer, format+"\n", a...)
 }
 
+// TODO room for refactoring.
+// Maintain a list of resources to install, and uninstall them in the reverse order here.
 func (k *K8sUninstaller) Uninstall(ctx context.Context) error {
 	k.autodetect(ctx)
 

@@ -136,6 +136,7 @@ func (k *K8sClusterMesh) generateService() (*corev1.Service, error) {
 	return svc, nil
 }
 
+// TODO
 var initContainerArgs = []string{`rm -rf /var/run/etcd/*;
 export ETCDCTL_API=3;
 /usr/local/bin/etcd --data-dir=/var/run/etcd --name=clustermesh-apiserver --listen-client-urls=http://127.0.0.1:2379 --advertise-client-urls=http://127.0.0.1:2379 --initial-cluster-token=clustermesh-apiserver --initial-cluster-state=new --auto-compaction-retention=1 &

@@ -37,7 +37,10 @@ require (
 	sigs.k8s.io/yaml v1.3.0
 )
 
-require github.com/emicklei/go-restful/v3 v3.9.0 // indirect
+require (
+	github.com/emicklei/go-restful/v3 v3.9.0 // indirect
+	github.com/maxbrunsfeld/counterfeiter/v6 v6.5.0 // indirect
+)
 
 require (
 	cloud.google.com/go/compute v1.6.1 // indirect

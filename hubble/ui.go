@@ -9,6 +9,11 @@ import (
 	"io"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
+	"github.com/cilium/cilium-cli/k8s"
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium-cli/internal/utils"
 
@@ -132,16 +137,18 @@ func (k *K8sHubble) deleteUICertificates(ctx context.Context) error {
 	return nil
 }
 
-func (k *K8sHubble) enableUI(ctx context.Context) (string, error) {
+func (k *K8sHubble) enableUI(ctx context.Context) (*k8s.ResourceSet, string, error) {
 	hubbleUIDeploy, err := k.generateHubbleUIDeployment()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
-	_, err = k.client.GetDeployment(ctx, hubbleUIDeploy.GetNamespace(), hubbleUIDeploy.GetName(), metav1.GetOptions{})
-	if err == nil {
+	// TODO: add context to errors.
+	if _, err = k.client.GetDeployment(ctx, hubbleUIDeploy.GetNamespace(), hubbleUIDeploy.GetName(), metav1.GetOptions{}); err == nil {
 		k.Log("✅ Hubble UI is already deployed")
-		return hubbleUIDeploy.GetName(), nil
+		return nil, hubbleUIDeploy.GetName(), nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, "", err
 	}
 
 	// TODO we won't generate hubble-ui certificates because we don't want
@@ -154,40 +161,26 @@ func (k *K8sHubble) enableUI(ctx context.Context) (string, error) {
 
 	hubbleUICM, err := k.generateHubbleUIConfigMap()
 	if err != nil {
-		return "", err
-	}
-
-	k.Log("✨ Deploying Hubble UI and Hubble UI Backend...")
-	if _, err := k.client.CreateConfigMap(ctx, hubbleUICM.GetNamespace(), hubbleUICM, metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
-	sa := k.NewServiceAccount(defaults.HubbleUIServiceAccountName)
-	if _, err := k.client.CreateServiceAccount(ctx, sa.GetNamespace(), sa, metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
-	if _, err := k.client.CreateClusterRole(ctx, k.NewClusterRole(defaults.HubbleUIClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
-	if _, err := k.client.CreateClusterRoleBinding(ctx, k.NewClusterRoleBinding(defaults.HubbleUIClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
-	if _, err := k.client.CreateDeployment(ctx, hubbleUIDeploy.GetNamespace(), hubbleUIDeploy, metav1.CreateOptions{}); err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	hubbleUISvc, err := k.generateHubbleUIService()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	if _, err := k.client.CreateService(ctx, hubbleUISvc.GetNamespace(), hubbleUISvc, metav1.CreateOptions{}); err != nil {
-		return "", err
+	resourceSet := &k8s.ResourceSet{
+		LogMsg: "✨ Deploying Hubble UI and Hubble UI Backend...",
+		Objects: []runtime.Object{
+			hubbleUICM,
+			k.NewServiceAccount(defaults.HubbleUIServiceAccountName),
+			k.NewClusterRole(defaults.HubbleUIClusterRoleName),
+			k.NewClusterRoleBinding(defaults.HubbleUIClusterRoleName),
+			hubbleUIDeploy,
+			hubbleUISvc,
+		},
 	}
 
-	return hubbleUIDeploy.GetName(), nil
+	return resourceSet, hubbleUIDeploy.GetName(), nil
 }
 
 // TODO we won't generate hubble-ui certificates because we don't want

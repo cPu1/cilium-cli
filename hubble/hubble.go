@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cilium/cilium-cli/k8s"
 	"io"
+	"k8s.io/apimachinery/pkg/runtime"
 	"os"
 	"reflect"
 	"regexp"
@@ -624,8 +626,7 @@ func (k *K8sHubble) Enable(ctx context.Context) error {
 		}
 	}
 
-	err = k.generateManifestsEnable(ctx, true, k.helmState.Values)
-	if err != nil {
+	if err := k.generateManifestsEnable(ctx, true, k.helmState.Values); err != nil {
 		return err
 	}
 
@@ -648,43 +649,41 @@ func (k *K8sHubble) Enable(ctx context.Context) error {
 		}
 		dur = time.Since(start)
 
-		s, err := collector.Status(ctx)
-		if err != nil {
+		if s, err := collector.Status(ctx); err != nil {
 			fmt.Println(s.Format())
 			return err
 		}
 	}
 
-	if peerSvc := k.generatePeerService(); peerSvc != nil {
-		k.Log("🚀 Creating Peer Service...")
-		if _, err := k.client.CreateService(ctx, k.params.Namespace, peerSvc, metav1.CreateOptions{}); err != nil {
-			return err
-		}
+	resourceSets := []k8s.ResourceSet{
+		{
+			LogMsg: "🚀 Creating Peer Service...",
+			Objects: []runtime.Object{k.generatePeerService()},
+		},
+		{
+			LogMsg: "🚀 Creating Metrics Service...",
+			Objects: []runtime.Object{k.generateMetricsService()},
+		},
 	}
-
-	if metricsSvc := k.generateMetricsService(); metricsSvc != nil {
-		k.Log("🚀 Creating Metrics Service...")
-		if _, err := k.client.CreateService(ctx, k.params.Namespace, metricsSvc, metav1.CreateOptions{}); err != nil {
-			return err
-		}
-	}
+	// TODO k.params.Namespace vs resource.Namespace
+	// Does it override the namespace in the resource or throw an error?
 
 	var warnFreePods []string
 	if k.params.Relay {
-		podsName, err := k.enableRelay(ctx)
+		relayResourceSets, podsName, err := k.enableRelay(ctx)
 		if err != nil {
 			return err
 		}
-
+		resourceSets = append(resourceSets, relayResourceSets...)
 		warnFreePods = append(warnFreePods, podsName)
 	}
 
 	if k.params.UI {
-		podsName, err := k.enableUI(ctx)
+		uiResourceSet, podsName, err := k.enableUI(ctx)
 		if err != nil {
 			return err
 		}
-
+		resourceSets = append(resourceSets, *uiResourceSet)
 		warnFreePods = append(warnFreePods, podsName)
 	}
 

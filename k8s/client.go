@@ -17,6 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/restmapper"
+
 	"github.com/blang/semver/v4"
 	"github.com/distribution/distribution/reference"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -55,6 +59,8 @@ type Client struct {
 	CiliumClientset  ciliumClientset.Interface
 	Config           *rest.Config
 	RawConfig        clientcmdapi.Config
+	restMapper       meta.RESTMapper
+	resourceHelper   *ResourceHelper
 	restClientGetter genericclioptions.RESTClientGetter
 	contextName      string
 }
@@ -98,6 +104,10 @@ func NewClient(contextName, kubeconfig string) (*Client, error) {
 	if contextName == "" {
 		contextName = rawConfig.CurrentContext
 	}
+	restMapper, err := makeRestConfigMapper(config)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Client{
 		CiliumClientset:  ciliumClientset,
@@ -107,7 +117,25 @@ func NewClient(contextName, kubeconfig string) (*Client, error) {
 		RawConfig:        rawConfig,
 		restClientGetter: &restClientGetter,
 		contextName:      contextName,
+		restMapper:       restMapper,
 	}, nil
+}
+
+// ResourceCreatorFor creates a ResourceCreator for the specified namespace and logFunc.
+func (c *Client) ResourceCreatorFor(namespace string, logFunc LogFunc) ResourceCreator {
+	return NewResourceHelper(c.Config, c.restMapper, HelperFor, namespace, logFunc)
+}
+
+func makeRestConfigMapper(restConfig *rest.Config) (meta.RESTMapper, error) {
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		return nil, err
+	}
+	apiGroupResources, err := restmapper.GetAPIGroupResources(discoveryClient)
+	if err != nil {
+		return nil, err
+	}
+	return restmapper.NewDiscoveryRESTMapper(apiGroupResources), nil
 }
 
 // ContextName returns the name of the context the client is connected to

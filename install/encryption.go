@@ -8,6 +8,8 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cilium/cilium-cli/defaults"
@@ -30,22 +32,30 @@ func generateRandomKey() (string, error) {
 	return key, nil
 }
 
-func (k *K8sInstaller) createEncryptionSecret(ctx context.Context) error {
+func (k *K8sInstaller) createEncryptionSecret(ctx context.Context) (*k8s.ResourceSet, error) {
 	// Check if secret already exists and reuse it
 	_, err := k.client.GetSecret(ctx, k.params.Namespace, defaults.EncryptionSecretName, metav1.GetOptions{})
 	if err == nil {
 		k.Log("🔑 Found existing encryption secret %s", defaults.EncryptionSecretName)
-		return nil
+		return nil, nil
 	}
 
 	key, err := generateRandomKey()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	data := map[string][]byte{"keys": []byte(key)}
+	secret := k8s.NewSecret(defaults.EncryptionSecretName, k.params.Namespace, data)
+	return &k8s.ResourceSet{
+		LogMsg:  fmt.Sprintf("🔑 Generated encryption secret %s", defaults.EncryptionSecretName),
+		Objects: []runtime.Object{secret},
+	}, nil
 
-	k.Log("🔑 Generated encryption secret %s", defaults.EncryptionSecretName)
+	// TODO note the bug in error message.
+
+	/*k.Log("🔑 Generated encryption secret %s", defaults.EncryptionSecretName)
+
 	_, err = k.client.CreateSecret(ctx, k.params.Namespace, k8s.NewSecret(defaults.EncryptionSecretName, k.params.Namespace, data), metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("unable to create encryption secret %s/%s: %w", k.params.Namespace, defaults.HubbleServerSecretName, err)
@@ -56,5 +66,5 @@ func (k *K8sInstaller) createEncryptionSecret(ctx context.Context) error {
 		}
 	})
 
-	return nil
+	return nil*/
 }

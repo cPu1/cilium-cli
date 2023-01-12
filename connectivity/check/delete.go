@@ -100,7 +100,9 @@ func (ct *ConnectivityTest) deleteCiliumPods(ctx context.Context) error {
 
 	// re-initialized list of Cilium pods
 	ct.ciliumPods = make(map[string]Pod)
-	ct.initCiliumPods(ctx)
+	if err := ct.initCiliumPods(ctx); err != nil {
+		return err
+	}
 
 	debugLogFeatures := func(header string) {
 		if ct.debug() {
@@ -118,7 +120,9 @@ func (ct *ConnectivityTest) deleteCiliumPods(ctx context.Context) error {
 
 	debugLogFeatures("Features before update:")
 	// Update list node nodes without Cilium
-	ct.UpdateFeaturesFromNodes(ctx)
+	if err := ct.UpdateFeaturesFromNodes(ctx); err != nil {
+		return err
+	}
 	// Disable tests requiring L7 proxy to run, the L7 proxy isn't running anymore.
 	ct.ForceDisableFeature(FeatureL7Proxy)
 	// Disable tests requiring health checking, agent and thus cilium-health isn't running on

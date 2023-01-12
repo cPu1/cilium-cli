@@ -8,6 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/cilium/cilium-cli/k8s"
+
 	"github.com/cilium/cilium/pkg/versioncheck"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -218,12 +222,12 @@ func (k *K8sInstaller) azExec(args ...string) ([]byte, error) {
 	return k.Exec("az", args...)
 }
 
-func (k *K8sInstaller) createAKSSecrets(ctx context.Context) error {
+func (k *K8sInstaller) createAKSSecrets(ctx context.Context) (*k8s.ResourceSet, error) {
 	// Check if secret already exists and reuse it
 	_, err := k.client.GetSecret(ctx, k.params.Namespace, defaults.AKSSecretName, metav1.GetOptions{})
 	if err == nil {
 		k.Log("🔑 Found existing AKS secret %s", defaults.AKSSecretName)
-		return nil
+		return nil, nil
 	}
 
 	var (
@@ -234,7 +238,7 @@ func (k *K8sInstaller) createAKSSecrets(ctx context.Context) error {
 	case versioncheck.MustCompile(">=1.12.0")(k.chartVersion):
 		secretFileName = "templates/cilium-operator/secret.yaml"
 	default:
-		return fmt.Errorf("cilium version unsupported %s", k.chartVersion)
+		return nil, fmt.Errorf("cilium version unsupported %s", k.chartVersion)
 	}
 
 	secretFile := k.manifests[secretFileName]
@@ -242,16 +246,8 @@ func (k *K8sInstaller) createAKSSecrets(ctx context.Context) error {
 	var secret corev1.Secret
 	utils.MustUnmarshalYAML([]byte(secretFile), &secret)
 
-	k.Log("🔑 Generated AKS secret %s", defaults.AKSSecretName)
-	_, err = k.client.CreateSecret(ctx, k.params.Namespace, &secret, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("unable to create AKS secret %s/%s: %w", k.params.Namespace, defaults.AKSSecretName, err)
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteSecret(ctx, k.params.Namespace, defaults.AKSSecretName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s Secret: %s", defaults.AKSSecretName, err)
-		}
-	})
-
-	return nil
+	return &k8s.ResourceSet{
+		LogMsg:  fmt.Sprintf("🔑 Generating AKS secret %s", defaults.AKSSecretName),
+		Objects: []runtime.Object{&secret},
+	}, nil
 }
