@@ -57,7 +57,7 @@ func (c *CertManager) GetOrCreateCASecret(ctx context.Context, caSecretName stri
 	if !createCA || !errors.IsNotFound(err) {
 		return s, false, err
 	}
-	// from here the CA Secret doesn't exists and we are requested to create
+	// From here, the CA Secret doesn't exist, and we are requested to create
 	// it.
 	if err = c.GenerateCA(); err != nil {
 		return nil, false, fmt.Errorf("unable to generate CA: %w", err)
@@ -70,7 +70,7 @@ func (c *CertManager) GetOrCreateCASecret(ctx context.Context, caSecretName stri
 	return s, true, nil
 }
 
-func (c *CertManager) LoadCAFromK8s(ctx context.Context, secret *corev1.Secret) error {
+func (c *CertManager) LoadCAFromK8s(_ context.Context, secret *corev1.Secret) error {
 	if key, ok := secret.Data[defaults.CASecretKeyName]; ok {
 		c.caKey = make([]byte, len(key))
 		copy(c.caKey, key)

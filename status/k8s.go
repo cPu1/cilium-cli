@@ -306,30 +306,29 @@ func (k *K8sStatusCollector) statusIsReady(s *Status) bool {
 }
 
 func (k *K8sStatusCollector) Status(ctx context.Context) (*Status, error) {
-	var mostRecentStatus *Status
-
 	ctx, cancel := context.WithTimeout(ctx, k.params.waitTimeout())
 	defer cancel()
 
-retry:
-	select {
-	case <-ctx.Done():
-		return mostRecentStatus, fmt.Errorf("timeout while waiting for status to become successful: %w", ctx.Err())
-	default:
-	}
+	var mostRecentStatus *Status
+	for {
+		s := k.status(ctx)
+		// We collect the most recent status that even if the last status call
+		// fails, we can still display the most recent status
+		if s != nil {
+			mostRecentStatus = s
+		}
+		if k.statusIsReady(s) || !k.params.Wait {
+			return mostRecentStatus, nil
+		}
 
-	s := k.status(ctx)
-	// We collect the most recent status that even if the last status call
-	// fails, we can still display the most recent status
-	if s != nil {
-		mostRecentStatus = s
+		timer := time.NewTimer(defaults.WaitRetryInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return mostRecentStatus, fmt.Errorf("timeout while waiting for status to become successful: %w", ctx.Err())
+		}
 	}
-	if !k.statusIsReady(s) && k.params.Wait {
-		time.Sleep(defaults.WaitRetryInterval)
-		goto retry
-	}
-
-	return mostRecentStatus, nil
 }
 
 type statusTask struct {
