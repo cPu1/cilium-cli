@@ -40,7 +40,7 @@ func NewDefaultCiliumCommand() *cobra.Command {
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			cmd.Help()
+			_ = cmd.Help()
 		},
 		Use:   "cilium",
 		Short: "Cilium provides eBPF-based Networking, Security, and Observability for Kubernetes",

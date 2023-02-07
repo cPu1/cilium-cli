@@ -9,11 +9,14 @@ import (
 
 	"github.com/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium-cli/internal/utils"
+	"github.com/cilium/cilium-cli/k8s"
 
 	"github.com/cilium/cilium/pkg/versioncheck"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func (k *K8sHubble) generateRelayService() (*corev1.Service, error) {
@@ -115,51 +118,50 @@ func (k *K8sHubble) disableRelay(ctx context.Context) error {
 	return k.deleteRelayCertificates(ctx)
 }
 
-func (k *K8sHubble) enableRelay(ctx context.Context) (string, error) {
+func (k *K8sHubble) enableRelay(ctx context.Context) ([]k8s.ResourceSet, string, error) {
 	relayDeployment, err := k.generateRelayDeployment()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
-	_, err = k.client.GetDeployment(ctx, relayDeployment.GetNamespace(), relayDeployment.GetName(), metav1.GetOptions{})
-	if err == nil {
+	// TODO trim down the client interface for this type.
+	if _, err := k.client.GetDeployment(ctx, relayDeployment.GetNamespace(), relayDeployment.GetName(), metav1.GetOptions{}); err == nil {
 		k.Log("✅ Relay is already deployed")
-		return relayDeployment.GetName(), nil
+		return nil, relayDeployment.GetName(), nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, "", err
 	}
 
+	// TODO: is this log message required?
 	k.Log("✨ Generating certificates...")
 
-	if err := k.createRelayCertificates(ctx); err != nil {
-		return "", err
-	}
-
-	relayCm, err := k.generateRelayConfigMap()
+	relayCertsResourceSet, err := k.createRelayCertificates()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	k.Log("✨ Deploying Relay...")
-	if _, err := k.client.CreateConfigMap(ctx, relayCm.GetNamespace(), relayCm, metav1.CreateOptions{}); err != nil {
-		return "", err
+	relayCM, err := k.generateRelayConfigMap()
+	if err != nil {
+		return nil, "", err
 	}
-
-	sa := k.NewServiceAccount(defaults.RelayServiceAccountName)
-	if _, err := k.client.CreateServiceAccount(ctx, sa.GetNamespace(), sa, metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
-	if _, err := k.client.CreateDeployment(ctx, relayDeployment.GetNamespace(), relayDeployment, metav1.CreateOptions{}); err != nil {
-		return "", err
-	}
-
 	relaySvc, err := k.generateRelayService()
 	if err != nil {
-		return "", err
-	}
-	if _, err := k.client.CreateService(ctx, relaySvc.GetNamespace(), relaySvc, metav1.CreateOptions{}); err != nil {
-		return "", err
+		return nil, "", err
 	}
 
-	return relayDeployment.GetName(), nil
+	resourceSets := []k8s.ResourceSet{
+		relayCertsResourceSet,
+		{
+			LogMsg: "✨ Deploying Relay...",
+			Objects: []runtime.Object{
+				relayCM,
+				k.NewServiceAccount(defaults.RelayServiceAccountName),
+				relayDeployment,
+				relaySvc,
+			},
+		},
+	}
+	// TODO: apply here?
+	return resourceSets, relayDeployment.GetName(), nil
 }
 
 func (k *K8sHubble) deleteRelayCertificates(ctx context.Context) error {
@@ -179,15 +181,20 @@ func (k *K8sHubble) deleteRelayCertificates(ctx context.Context) error {
 	return nil
 }
 
-func (k *K8sHubble) createRelayCertificates(ctx context.Context) error {
-	k.Log("🔑 Generating certificates for Relay...")
+func (k *K8sHubble) createRelayCertificates() (k8s.ResourceSet, error) {
+	secret, err := k.createRelayClientCertificate()
+	if err != nil {
+		return k8s.ResourceSet{}, err
+	}
+	return k8s.ResourceSet{
+		LogMsg:  "🔑 Generating certificates for Relay...",
+		Objects: []runtime.Object{&secret},
+	}, nil
 	// TODO we won't generate hubble-ui certificates because we don't want
 	//  to give a bad UX for hubble-cli (which connects to hubble-relay)
 	// if err := k.createRelayServerCertificate(ctx); err != nil {
 	// 	return err
 	// }
-
-	return k.createRelayClientCertificate(ctx)
 }
 
 // TODO we won't generate hubble-ui certificates because we don't want
@@ -206,18 +213,8 @@ func (k *K8sHubble) createRelayCertificates(ctx context.Context) error {
 // 	return nil
 // }
 
-func (k *K8sHubble) createRelayClientCertificate(ctx context.Context) error {
-	secret, err := k.generateRelayCertificate(defaults.RelayClientSecretName)
-	if err != nil {
-		return err
-	}
-
-	_, err = k.client.CreateSecret(ctx, secret.GetNamespace(), &secret, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("unable to create secret %s/%s: %w", secret.GetNamespace(), secret.GetName(), err)
-	}
-
-	return nil
+func (k *K8sHubble) createRelayClientCertificate() (corev1.Secret, error) {
+	return k.generateRelayCertificate(defaults.RelayClientSecretName)
 }
 
 func (k *K8sHubble) generateRelayCertificate(name string) (corev1.Secret, error) {

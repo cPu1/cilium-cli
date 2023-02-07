@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/cilium-cli/k8s"
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/cilium/cilium-cli/defaults"
 	"github.com/cilium/cilium-cli/internal/certs"
 	"github.com/cilium/cilium-cli/internal/helm"
@@ -581,7 +584,8 @@ func (k *K8sHubble) genManifests(ctx context.Context, printHelmTemplate bool, pr
 	}
 
 	if k.params.HelmGenValuesFile != "" {
-		return os.WriteFile(k.params.HelmGenValuesFile, []byte(yamlValue), 0o600)
+		// TODO 0o600
+		return os.WriteFile(k.params.HelmGenValuesFile, []byte(yamlValue), 0600)
 	}
 
 	k8sVersionStr := k.params.K8sVersion
@@ -627,8 +631,7 @@ func (k *K8sHubble) Enable(ctx context.Context) error {
 		}
 	}
 
-	err = k.generateManifestsEnable(ctx, true, k.helmState.Values)
-	if err != nil {
+	if err := k.generateManifestsEnable(ctx, true, k.helmState.Values); err != nil {
 		return err
 	}
 
@@ -651,43 +654,42 @@ func (k *K8sHubble) Enable(ctx context.Context) error {
 		}
 		dur = time.Since(start)
 
-		s, err := collector.Status(ctx)
-		if err != nil {
+		if s, err := collector.Status(ctx); err != nil {
 			fmt.Println(s.Format())
 			return err
 		}
 	}
 
+	var resourceSets []k8s.ResourceSet
 	if peerSvc := k.generatePeerService(); peerSvc != nil {
-		k.Log("🚀 Creating Peer Service...")
-		if _, err := k.client.CreateService(ctx, k.params.Namespace, peerSvc, metav1.CreateOptions{}); err != nil {
-			return err
-		}
+		resourceSets = append(resourceSets, k8s.ResourceSet{
+			LogMsg:  "🚀 Creating Peer Service...",
+			Objects: []runtime.Object{peerSvc},
+		})
 	}
-
 	if metricsSvc := k.generateMetricsService(); metricsSvc != nil {
-		k.Log("🚀 Creating Metrics Service...")
-		if _, err := k.client.CreateService(ctx, k.params.Namespace, metricsSvc, metav1.CreateOptions{}); err != nil {
-			return err
-		}
+		resourceSets = append(resourceSets, k8s.ResourceSet{
+			LogMsg:  "🚀 Creating Metrics Service...",
+			Objects: []runtime.Object{metricsSvc},
+		})
 	}
 
 	var warnFreePods []string
 	if k.params.Relay {
-		podsName, err := k.enableRelay(ctx)
+		relayResourceSets, podsName, err := k.enableRelay(ctx)
 		if err != nil {
 			return err
 		}
-
+		resourceSets = append(resourceSets, relayResourceSets...)
 		warnFreePods = append(warnFreePods, podsName)
 	}
 
 	if k.params.UI {
-		podsName, err := k.enableUI(ctx)
+		uiResourceSet, podsName, err := k.enableUI(ctx)
 		if err != nil {
 			return err
 		}
-
+		resourceSets = append(resourceSets, *uiResourceSet)
 		warnFreePods = append(warnFreePods, podsName)
 	}
 

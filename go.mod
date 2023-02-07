@@ -40,6 +40,7 @@ require (
 require (
 	cloud.google.com/go/compute/metadata v0.2.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.9.0 // indirect
+	github.com/maxbrunsfeld/counterfeiter/v6 v6.5.0 // indirect
 )
 
 require (

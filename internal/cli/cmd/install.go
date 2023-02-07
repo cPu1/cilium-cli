@@ -32,7 +32,7 @@ Examples:
 cilium install
 
 # Install Cilium into Kubernetes context "kind-cluster1" and also set cluster
-# name and ID to prepare for multi-cluster capabilties.
+# name and ID to prepare for multi-cluster capabilities.
 cilium install --context kind-cluster1 --cluster-id 1 --cluster-name cluster1
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -62,23 +62,23 @@ cilium install --context kind-cluster1 --cluster-id 1 --cluster-name cluster1
 
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.ClusterName, "cluster-name", "", "Name of the cluster")
-	cmd.Flags().MarkDeprecated("cluster-name", "This can now be overridden via `helm-set` (Helm value: `cluster.name`).")
+	_ = cmd.Flags().MarkDeprecated("cluster-name", "This can now be overridden via `helm-set` (Helm value: `cluster.name`).")
 	cmd.Flags().StringSliceVar(&params.DisableChecks, "disable-check", []string{}, "Disable a particular validation check")
 	cmd.Flags().StringVar(&params.Version, "version", defaults.Version, "Cilium version to install")
 	cmd.Flags().StringVar(&params.DatapathMode, "datapath-mode", "", "Datapath mode to use { tunnel | aws-eni | gke | azure | aks-byocni } (default: autodetected).")
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.IPAM, "ipam", "", "IP Address Management (IPAM) mode")
-	cmd.Flags().MarkDeprecated("ipam", "IPAM mode is autodetected depending on `datapath-mode`. If needed, this can now be overridden via `helm-set` (Helm value: `ipam.mode`).")
+	_ = cmd.Flags().MarkDeprecated("ipam", "IPAM mode is autodetected depending on `datapath-mode`. If needed, this can now be overridden via `helm-set` (Helm value: `ipam.mode`).")
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.IPv4NativeRoutingCIDR, "ipv4-native-routing-cidr", "", "IPv4 CIDR within which native routing is possible")
-	cmd.Flags().MarkDeprecated("ipv4-native-routing-cidr", "This can now be overridden via `helm-set` (Helm value: `ipv4NativeRoutingCIDR`).")
+	_ = cmd.Flags().MarkDeprecated("ipv4-native-routing-cidr", "This can now be overridden via `helm-set` (Helm value: `ipv4NativeRoutingCIDR`).")
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().IntVar(&params.ClusterID, "cluster-id", 0, "Unique cluster identifier for multi-cluster")
-	cmd.Flags().MarkDeprecated("cluster-id", "This can now be overridden via `helm-set` (Helm value: `cluster.id`).")
+	_ = cmd.Flags().MarkDeprecated("cluster-id", "This can now be overridden via `helm-set` (Helm value: `cluster.id`).")
 	cmd.Flags().StringVar(&params.InheritCA, "inherit-ca", "", "Inherit/import CA from another cluster")
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.KubeProxyReplacement, "kube-proxy-replacement", "disabled", "Enable/disable kube-proxy replacement { disabled | partial | strict }")
-	cmd.Flags().MarkDeprecated("kube-proxy-replacement", "This can now be overridden via `helm-set` (Helm value: `kubeProxyReplacement`).")
+	_ = cmd.Flags().MarkDeprecated("kube-proxy-replacement", "This can now be overridden via `helm-set` (Helm value: `kubeProxyReplacement`).")
 	cmd.Flags().BoolVar(&params.Wait, "wait", true, "Wait for status to report success (no errors)")
 	cmd.Flags().DurationVar(&params.WaitDuration, "wait-duration", defaults.StatusWaitDuration, "Maximum time to wait for status")
 	cmd.Flags().BoolVar(&params.RestartUnmanagedPods, "restart-unmanaged-pods", true, "Restart pods which are not being managed by Cilium")
@@ -98,11 +98,11 @@ cilium install --context kind-cluster1 --cluster-id 1 --cluster-name cluster1
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.Azure.ResourceGroupName, "azure-resource-group", "", "Azure resource group name the cluster is in (required)")
 	cmd.Flags().StringVar(&params.Azure.AKSNodeResourceGroup, "azure-node-resource-group", "", "Azure node resource group name the cluster is in. Bypasses `--azure-resource-group` if provided.")
-	cmd.Flags().MarkHidden("azure-node-resource-group") // intended for for development purposes, notably CI usage, cf. azure.go
+	_ = cmd.Flags().MarkHidden("azure-node-resource-group") // intended for development purposes, notably CI usage, cf. azure.go
 	cmd.Flags().StringVar(&params.Azure.SubscriptionName, "azure-subscription", "", "Azure subscription name the cluster is in (default `az account show`)")
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.Azure.SubscriptionID, "azure-subscription-id", "", "Azure subscription ID. Bypasses auto-detection and `--azure-subscription` if provided.")
-	cmd.Flags().MarkHidden("azure-subscription-id") // intended for for development purposes, notably CI usage, cf. azure.go
+	_ = cmd.Flags().MarkHidden("azure-subscription-id") // intended for development purposes, notably CI usage, cf. azure.go
 	// It can be deprecated since we have a helm option for it
 	cmd.Flags().StringVar(&params.Azure.TenantID, "azure-tenant-id", "", "Tenant ID of Azure Service Principal to use for installing Cilium (will create one if none provided)")
 	// It can be deprecated since we have a helm option for it

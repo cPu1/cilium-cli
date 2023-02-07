@@ -19,9 +19,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -145,6 +145,7 @@ func (k *K8sInstaller) getSecretNamespace() string {
 }
 
 type k8sInstallerImplementation interface {
+	ResourceCreatorFor(logFunc k8s.LogFunc) k8s.ResourceCreator
 	ClusterName() string
 	GetAPIServerHostAndPort() (string, string)
 	ListNodes(ctx context.Context, options metav1.ListOptions) (*corev1.NodeList, error)
@@ -210,14 +211,15 @@ type k8sInstallerImplementation interface {
 }
 
 type K8sInstaller struct {
-	client         k8sInstallerImplementation
-	params         Parameters
-	flavor         k8s.Flavor
-	certManager    *certs.CertManager
-	rollbackSteps  []rollbackStep
-	manifests      map[string]string
-	helmYAMLValues string
-	chartVersion   semver.Version
+	client          k8sInstallerImplementation
+	resourceCreator k8s.ResourceCreator
+	params          Parameters
+	flavor          k8s.Flavor
+	certManager     *certs.CertManager
+	rollbackSteps   []rollbackStep
+	manifests       map[string]string
+	helmYAMLValues  string
+	chartVersion    semver.Version
 }
 
 type AzureParameters struct {
@@ -235,15 +237,15 @@ var (
 	// FlagsToHelmOpts maps the deprecated install flags to the helm
 	// options
 	FlagsToHelmOpts = map[string]string{
-		"agent-image":              "image.override",
-		"azure-client-id":          "azure.clientID",
-		"azure-client-secret":      "azure.clientSecret",
-		"azure-resource-group":     "azure.resourceGroup",
-		"azure-subscription-id":    "azure.subscriptionID",
-		"azure-tenant-id":          "azure.tenantID",
-		"cluster-id":               "cluster.id",
-		"cluster-name":             "cluster.name",
-		"ipam":                     "ipam.mode",
+		"agent-image":           "image.override",
+		"azure-client-id":       "azure.clientID",
+		"azure-client-secret":   "azure.clientSecret",
+		"azure-resource-group":  "azure.resourceGroup",
+		"azure-subscription-id": "azure.subscriptionID",
+		"azure-tenant-id":       "azure.tenantID",
+		"cluster-id":            "cluster.id",
+		"cluster-name":          "cluster.name",
+		"ipam":                  "ipam.mode",
 		"ipv4-native-routing-cidr": "ipv4NativeRoutingCIDR",
 		"kube-proxy-replacement":   "kubeProxyReplacement",
 		"node-encryption":          "encryption.nodeEncryption",
@@ -382,7 +384,10 @@ func NewK8sInstaller(client k8sInstallerImplementation, p Parameters) (*K8sInsta
 	}
 
 	return &K8sInstaller{
-		client:       client,
+		client: client,
+		resourceCreator: client.ResourceCreatorFor(func(msg string) {
+			_, _ = fmt.Fprintf(p.Writer, msg+"\n")
+		}),
 		params:       p,
 		certManager:  cm,
 		chartVersion: chartVersion,
@@ -461,13 +466,17 @@ func (k *K8sInstaller) generateConfigMap() (*corev1.ConfigMap, error) {
 	return &cm, nil
 }
 
-func (k *K8sInstaller) deployResourceQuotas(ctx context.Context) error {
-	k.Log("🚀 Creating Resource quotas...")
-
+func (k *K8sInstaller) createResourceQuotas() k8s.ResourceSet {
+	typeMeta := metav1.TypeMeta{
+		// TODO: obtain kind via reflection.
+		Kind:       "ResourceQuota",
+		APIVersion: corev1.SchemeGroupVersion.String(),
+	}
 	ciliumResourceQuota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: defaults.AgentResourceQuota,
 		},
+		TypeMeta: typeMeta,
 		Spec: corev1.ResourceQuotaSpec{
 			Hard: corev1.ResourceList{
 				// 5k nodes * 2 DaemonSets (Cilium and cilium node init)
@@ -484,20 +493,11 @@ func (k *K8sInstaller) deployResourceQuotas(ctx context.Context) error {
 			},
 		},
 	}
-
-	if _, err := k.client.CreateResourceQuota(ctx, k.params.Namespace, ciliumResourceQuota, metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteResourceQuota(ctx, k.params.Namespace, defaults.AgentResourceQuota, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ResourceQuota: %s", defaults.AgentResourceQuota, err)
-		}
-	})
-
 	operatorResourceQuota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: defaults.OperatorResourceQuota,
 		},
+		TypeMeta: typeMeta,
 		Spec: corev1.ResourceQuotaSpec{
 			Hard: corev1.ResourceList{
 				// 15 "clusterwide" Cilium Operator pods for HA
@@ -515,16 +515,13 @@ func (k *K8sInstaller) deployResourceQuotas(ctx context.Context) error {
 		},
 	}
 
-	if _, err := k.client.CreateResourceQuota(ctx, k.params.Namespace, operatorResourceQuota, metav1.CreateOptions{}); err != nil {
-		return err
+	return k8s.ResourceSet{
+		LogMsg: "🚀 Creating Resource quotas...",
+		Objects: []runtime.Object{
+			ciliumResourceQuota,
+			operatorResourceQuota,
+		},
 	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteResourceQuota(ctx, k.params.Namespace, defaults.OperatorResourceQuota, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ResourceQuota: %s", defaults.OperatorResourceQuota, err)
-		}
-	})
-
-	return nil
 }
 
 func (k *K8sInstaller) restartUnmanagedPods(ctx context.Context) error {
@@ -535,7 +532,7 @@ func (k *K8sInstaller) restartUnmanagedPods(ctx context.Context) error {
 		return fmt.Errorf("unable to list pods: %w", err)
 	}
 
-	// If not pods are running, skip. This avoids attemptingm to retrieve
+	// If not pods are running, skip. This avoids attempting to retrieve
 	// CiliumEndpoints if no pods are present at all. Cilium will not be
 	// running either.
 	if len(pods.Items) == 0 {
@@ -571,8 +568,7 @@ func (k *K8sInstaller) restartUnmanagedPods(ctx context.Context) error {
 				k.Log("♻️  Restarting unmanaged pods...")
 				printed = true
 			}
-			err := k.client.DeletePod(ctx, pod.Namespace, pod.Name, metav1.DeleteOptions{})
-			if err != nil {
+			if err := k.client.DeletePod(ctx, pod.Namespace, pod.Name, metav1.DeleteOptions{}); err != nil {
 				k.Log("⚠️  Unable to restart pod %s/%s: %s", pod.Namespace, pod.Name, err)
 			} else {
 				k.Log("♻️  Restarted unmanaged pod %s/%s", pod.Namespace, pod.Name)
@@ -630,8 +626,7 @@ func (k *K8sInstaller) Install(ctx context.Context) error {
 		}
 	}
 
-	err := k.generateManifests(ctx)
-	if err != nil {
+	if err := k.generateManifests(ctx); err != nil {
 		return err
 	}
 
@@ -659,6 +654,8 @@ func (k *K8sInstaller) Install(ctx context.Context) error {
 		}
 	}
 
+	var resourceSets []k8s.ResourceSet
+
 	switch k.flavor.Kind {
 	case k8s.KindEKS:
 		cm, err := k.generateConfigMap()
@@ -678,18 +675,18 @@ func (k *K8sInstaller) Install(ctx context.Context) error {
 		}
 	case k8s.KindGKE:
 		// TODO(aanm) automate this as well in form of helm chart
-		if err := k.deployResourceQuotas(ctx); err != nil {
-			return err
-		}
+		resourceSets = append(resourceSets, k.createResourceQuotas())
 
 	case k8s.KindAKS:
 		// We only made the secret-based azure installation available in >= 1.12.0
 		// Introduced in https://github.com/cilium/cilium/pull/18010
 		// Additionally, secrets are only needed when using Azure IPAM
 		if k.params.DatapathMode == DatapathAzure && versioncheck.MustCompile(">=1.12.0")(k.chartVersion) {
-			if err := k.createAKSSecrets(ctx); err != nil {
+			resourceSet, err := k.createAKSSecrets(ctx)
+			if err != nil {
 				return err
 			}
+			resourceSets = append(resourceSets, *resourceSet)
 		}
 	}
 
@@ -701,183 +698,102 @@ func (k *K8sInstaller) Install(ctx context.Context) error {
 		k.Log("🚀 Setting label %q on node %q to prevent Cilium from being scheduled on it...", defaults.CiliumNoScheduleLabel, nodeName)
 		label := utils.EscapeJSONPatchString(defaults.CiliumNoScheduleLabel)
 		labelPatch := fmt.Sprintf(`[{"op":"add","path":"/metadata/labels/%s","value":"true"}]`, label)
-		_, err = k.client.PatchNode(ctx, nodeName, types.JSONPatchType, []byte(labelPatch))
-		if err != nil {
+		if _, err := k.client.PatchNode(ctx, nodeName, types.JSONPatchType, []byte(labelPatch)); err != nil {
 			return err
 		}
 	}
 
-	k.Log("🚀 Creating Service accounts...")
-	if _, err := k.client.CreateServiceAccount(ctx, k.params.Namespace, k.NewServiceAccount(defaults.AgentServiceAccountName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteServiceAccount(ctx, k.params.Namespace, defaults.AgentServiceAccountName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ServiceAccount: %s", defaults.AgentServiceAccountName, err)
-		}
-	})
-
-	if _, err := k.client.CreateServiceAccount(ctx, k.params.Namespace, k.NewServiceAccount(defaults.OperatorServiceAccountName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteServiceAccount(ctx, k.params.Namespace, defaults.OperatorServiceAccountName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ServiceAccount: %s", defaults.OperatorServiceAccountName, err)
-		}
-	})
-
-	k.Log("🚀 Creating Cluster roles...")
-	if _, err := k.client.CreateClusterRole(ctx, k.NewClusterRole(defaults.AgentClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteClusterRole(ctx, defaults.AgentClusterRoleName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ClusterRole: %s", defaults.AgentClusterRoleName, err)
-		}
-	})
-
-	if _, err := k.client.CreateClusterRoleBinding(ctx, k.NewClusterRoleBinding(defaults.AgentClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteClusterRoleBinding(ctx, defaults.AgentClusterRoleName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ClusterRoleBinding: %s", defaults.AgentClusterRoleName, err)
-		}
-	})
-
-	if _, err := k.client.CreateClusterRole(ctx, k.NewClusterRole(defaults.OperatorClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteClusterRole(ctx, defaults.OperatorClusterRoleName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ClusterRole: %s", defaults.OperatorClusterRoleName, err)
-		}
-	})
-
-	if _, err := k.client.CreateClusterRoleBinding(ctx, k.NewClusterRoleBinding(defaults.OperatorClusterRoleName), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteClusterRoleBinding(ctx, defaults.OperatorClusterRoleName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ClusterRoleBinding: %s", defaults.OperatorClusterRoleName, err)
-		}
+	resourceSets = append(resourceSets, k8s.ResourceSet{
+		LogMsg: "🚀 Creating Service accounts...",
+		Objects: []runtime.Object{
+			k.NewServiceAccount(defaults.AgentServiceAccountName),
+			k.NewServiceAccount(defaults.OperatorServiceAccountName),
+		},
+	}, k8s.ResourceSet{
+		LogMsg: "🚀 Creating Cluster roles...",
+		Objects: []runtime.Object{
+			k.NewClusterRole(defaults.AgentClusterRoleName),
+			k.NewClusterRoleBinding(defaults.AgentClusterRoleName),
+			k.NewClusterRole(defaults.OperatorClusterRoleName),
+			k.NewClusterRoleBinding(defaults.OperatorClusterRoleName),
+		},
 	})
 
 	if k.params.Encryption == encryptionIPsec {
 		// TODO(aanm) automate this as well in form of helm chart
-		if err := k.createEncryptionSecret(ctx); err != nil {
+		resourceSet, err := k.createEncryptionSecret(ctx)
+		if err != nil {
 			return err
+		}
+		if resourceSet != nil {
+			resourceSets = append(resourceSets, *resourceSet)
 		}
 	}
 
-	ingressClass := k.generateIngressClass()
-	if ingressClass != nil {
-		if _, err := k.client.CreateIngressClass(ctx, ingressClass, metav1.CreateOptions{}); err != nil {
-			return err
-		}
-		k.pushRollbackStep(func(ctx context.Context) {
-			if err := k.client.DeleteIngressClass(ctx, defaults.IngressClassName, metav1.DeleteOptions{}); err != nil {
-				k.Log("Cannot delete %s IngressClass: %s", defaults.IngressClassName, err)
-			}
+	if ingressClass := k.generateIngressClass(); ingressClass != nil {
+		resourceSets = append(resourceSets, k8s.ResourceSet{
+			Objects: []runtime.Object{ingressClass},
 		})
 	}
 
-	secretsNamespace := k.getSecretNamespace()
-	if len(secretsNamespace) != 0 {
-		if _, err := k.client.CreateNamespace(ctx, secretsNamespace, metav1.CreateOptions{}); err != nil {
-			return err
+	if secretsNamespace := k.getSecretNamespace(); len(secretsNamespace) != 0 {
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: secretsNamespace,
+			},
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Namespace",
+				APIVersion: corev1.SchemeGroupVersion.Version,
+			},
 		}
-		k.pushRollbackStep(func(ctx context.Context) {
-			if err := k.client.DeleteNamespace(ctx, secretsNamespace, metav1.DeleteOptions{}); err != nil {
-				k.Log("Cannot delete %s Namespace: %s", secretsNamespace, err)
-			}
+		resourceSets = append(resourceSets, k8s.ResourceSet{
+			Objects: []runtime.Object{namespace},
 		})
 	}
 
+	var createOrUpdateResources []runtime.Object
 	for _, roleName := range []string{defaults.AgentSecretsRoleName, defaults.OperatorSecretsRoleName} {
-		rs := k.NewRole(roleName)
-
-		for _, r := range rs {
-			_, err = k.client.CreateRole(ctx, r.GetNamespace(), r, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) {
-				_, err = k.client.UpdateRole(ctx, r.GetNamespace(), r, metav1.UpdateOptions{})
-			}
-
-			if err != nil {
-				return err
-			}
-
-			k.pushRollbackStep(func(ctx context.Context) {
-				if err := k.client.DeleteRole(ctx, r.GetNamespace(), r.GetName(), metav1.DeleteOptions{}); err != nil {
-					k.Log("Cannot delete %s Role: %s", r.GetName(), err)
-				}
-			})
+		for _, r := range k.NewRole(roleName) {
+			createOrUpdateResources = append(createOrUpdateResources, r)
 		}
-
-		rbs := k.NewRoleBinding(roleName)
-		for _, rb := range rbs {
-			_, err := k.client.CreateRoleBinding(ctx, rb.GetNamespace(), rb, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) {
-				_, err = k.client.UpdateRoleBinding(ctx, rb.GetNamespace(), rb, metav1.UpdateOptions{})
-			}
-			if err != nil {
-				return err
-			}
-			k.pushRollbackStep(func(ctx context.Context) {
-				if err := k.client.DeleteRoleBinding(ctx, rb.GetNamespace(), rb.GetName(), metav1.DeleteOptions{}); err != nil {
-					k.Log("Cannot delete %s RoleBinding: %s/%s", rb.GetNamespace(), rb.GetName(), err)
-				}
-			})
+		for _, rb := range k.NewRoleBinding(roleName) {
+			createOrUpdateResources = append(createOrUpdateResources, rb)
 		}
 	}
+
+	resourceSets = append(resourceSets, k8s.ResourceSet{
+		Objects:        createOrUpdateResources,
+		UpdateIfExists: true,
+	})
 
 	configMap, err := k.generateConfigMap()
 	if err != nil {
 		return fmt.Errorf("cannot generate ConfigMap: %w", err)
 	}
-
-	if _, err := k.client.CreateConfigMap(ctx, k.params.Namespace, configMap, metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteConfigMap(ctx, k.params.Namespace, defaults.ConfigMapName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s ConfigMap: %s", defaults.ConfigMapName, err)
-		}
+	resourceSets = append(resourceSets, k8s.ResourceSet{
+		Objects: []runtime.Object{configMap},
 	})
 
 	// Create the node-init daemonset if one is required for the current kind.
 	if needsNodeInit(k.flavor.Kind) {
-		k.Log("🚀 Creating %s Node Init DaemonSet...", k.flavor.Kind.String())
 		ds := k.generateNodeInitDaemonSet(k.flavor.Kind)
-		if _, err := k.client.CreateDaemonSet(ctx, k.params.Namespace, ds, metav1.CreateOptions{}); err != nil {
-			return err
-		}
-		k.pushRollbackStep(func(ctx context.Context) {
-			if err := k.client.DeleteDaemonSet(ctx, k.params.Namespace, ds.Name, metav1.DeleteOptions{}); err != nil {
-				k.Log("Cannot delete %s DaemonSet: %s", ds.Name, err)
-			}
+		resourceSets = append(resourceSets, k8s.ResourceSet{
+			LogMsg:  fmt.Sprintf("🚀 Creating %s Node Init DaemonSet...", k.flavor.Kind.String()),
+			Objects: []runtime.Object{ds},
 		})
 	}
 
-	k.Log("🚀 Creating Agent DaemonSet...")
-	if _, err := k.client.CreateDaemonSet(ctx, k.params.Namespace, k.generateAgentDaemonSet(), metav1.CreateOptions{}); err != nil {
-		return err
-	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteDaemonSet(ctx, k.params.Namespace, defaults.AgentDaemonSetName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s DaemonSet: %s", defaults.AgentDaemonSetName, err)
-		}
+	resourceSets = append(resourceSets, k8s.ResourceSet{
+		LogMsg:  "🚀 Creating Agent DaemonSet...",
+		Objects: []runtime.Object{k.generateAgentDaemonSet()},
+	}, k8s.ResourceSet{
+		LogMsg:  "🚀 Creating Operator Deployment...",
+		Objects: []runtime.Object{k.generateOperatorDeployment()},
 	})
 
-	k.Log("🚀 Creating Operator Deployment...")
-	if _, err := k.client.CreateDeployment(ctx, k.params.Namespace, k.generateOperatorDeployment(), metav1.CreateOptions{}); err != nil {
+	if err := k.resourceCreator.CreateOrRollback(resourceSets); err != nil {
 		return err
 	}
-	k.pushRollbackStep(func(ctx context.Context) {
-		if err := k.client.DeleteDeployment(ctx, k.params.Namespace, defaults.OperatorDeploymentName, metav1.DeleteOptions{}); err != nil {
-			k.Log("Cannot delete %s Deployment: %s", defaults.OperatorDeploymentName, err)
-		}
-	})
 
 	if k.params.Wait || k.params.RestartUnmanagedPods {
 		// In case unmanaged pods should be restarted we need to make sure that Cilium
@@ -895,9 +811,11 @@ func (k *K8sInstaller) Install(ctx context.Context) error {
 			return err
 		}
 
-		s, err := collector.Status(ctx)
-		if err != nil {
-			fmt.Print(s.Format())
+		// TODO: status can be nil.
+		if s, err := collector.Status(ctx); err != nil {
+			if s != nil {
+				fmt.Print(s.Format())
+			}
 			return err
 		}
 	}
